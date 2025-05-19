@@ -1,8 +1,5 @@
 /* BDOS emulation */
 
-/* provide CP/M 3 function 105 (get date and time) */
-#define CPM3DATE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -10,10 +7,6 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <unistd.h>
-
-#ifdef CPM3DATE
-#include <time.h>
-#endif
 
 #include "defs.h"
 #include "vt.h"
@@ -345,9 +338,6 @@ char *bdos_decode(int n)
 	    case 34: return "write random record";
 	    case 35: return "compute file size";
 	    case 36: return "set random record";
-#ifdef CPM3DATE
-	    case 105: return "get date and time";
-#endif
 	    case 41:
 	    default: return "unknown";
 	}
@@ -429,94 +419,6 @@ int fixrc(z80info *z80, FILE *fp)
 
     return 0;
 }
-
-#ifdef CPM3DATE
-
-/*****************************************************************/
-/* helper functions for CP/M 3 BDOS call 105 (get date and time) */
-/*****************************************************************/
-
-/* date components in CP/M 3 (always local time) */
-struct cpm_time {
-    int day; /* 1..65535, day 1 is 1978-01-01 */
-    int hour;
-    int minute;
-    int second;
-};
-
-/* convert a number in the range 0..99 to a BCD encoded byte */
-static unsigned char bcd_byte(int b) {
-    return (((b % 100) / 10) << 4) | (b % 10);
-}
-
-/* copy a CP/M timestamp into CP/M memory pointed by register DE */
-static void store_cpm_time(const struct cpm_time *ct_p, z80info *z80) {
-    z80->mem[DE] = (ct_p->day & 0xff);
-    z80->mem[DE + 1] = ((ct_p->day >> 8) & 0xff);
-    z80->mem[DE + 2] = bcd_byte(ct_p->hour);
-    z80->mem[DE + 3] = bcd_byte(ct_p->minute);
-}
-
-/* convert a Unix date (seconds since 1970-01-01 UTC) to a CP/M date
- * (day number 1 = 1978-01-01, hours, minutes, and seconds, all in local time)
- * an out-of-range date will be signalled by day number 0
- */
-static void unix_to_cpm_time(const time_t *tp, struct cpm_time *ct_p) {
-    struct tm *tm_p, tm;
-    time_t t_first, t_this;
-    /* get corresponding local time stamp */
-    tm_p = localtime(tp);
-    /* save hour, minute, and second fields */
-    ct_p->hour = tm_p->tm_hour;
-    ct_p->minute = tm_p->tm_min;
-    ct_p->second = tm_p->tm_sec;
-    /* check for date below the CP/M range: CP/M day 1 is 1978-01-01 */
-    if (tm_p->tm_year < 78) {
-        ct_p->day = 0;
-    } else {
-        /* the calculation of the day number is quite convoluted;
-            * it is meant to take case of DST and leap seconds...
-            * calculate seconds of first day of current year, 00:00:00 local time
-            */
-        memset(&tm, 0, sizeof tm);
-        tm.tm_year = tm_p->tm_year;
-        tm.tm_mon = 0;
-        tm.tm_mday = 1;
-        tm.tm_hour = 0;
-        tm.tm_min = 0;
-        tm.tm_sec = 0;
-        t_this = mktime(&tm);
-        /* calculate seconds of 1978-01-01, 00:00:00 local time */
-        memset(&tm, 0, sizeof tm);
-        tm.tm_year = 78;
-        tm.tm_mon = 0;
-        tm.tm_mday = 1;
-        tm.tm_hour = 0;
-        tm.tm_min = 0;
-        tm.tm_sec = 0;
-        t_first = mktime(&tm);
-        /* calculate day number */
-        ct_p->day = (int) ((t_this - t_first + (12 * 60 * 60)) /
-            (24 * 60 * 60) + tm_p->tm_yday + 1);
-        /* check for date above the CP/M rage: day 65535 is 2157-07-05 */
-        if (ct_p->day > 65535) ct_p->day = 0;
-    }
-}
-
-/* return the current date and time */
-static unsigned char bdosx_get_date_and_time( z80info *z80 ) {
-    time_t t;
-    struct cpm_time ct;
-    /* get current Unix time */
-    time(&t);
-    /* convert it to the CP/M format */
-    unix_to_cpm_time(&t, &ct);
-    /* copy time to user buffer (DE); return the second value */
-    store_cpm_time(&ct, z80);
-    return bcd_byte(ct.second);
-}
-
-#endif /* CPM3DATE */
 
 /* emulation of BDOS calls */
 
@@ -976,13 +878,6 @@ void check_BDOS_hook(z80info *z80) {
 	HL = (restricted_mode || chdir((char  *)(z80->mem + DE))) ? 0xff : 0x00;
         B = H; A = L;
 	break;
-#ifdef CPM3DATE
-    case 105:   /* CP/M 3 function get date and time */
-        /* copy CP/M time to user buffer pointed by DE */
-        /* return the seconds value in A */
-        A = bdosx_get_date_and_time( z80 );
-        break;
-#endif
     default:
     	UNSUP:
 	printf("\n\nUnrecognized BDOS-Function %d:\n", C);
